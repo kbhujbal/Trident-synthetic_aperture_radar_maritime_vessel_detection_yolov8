@@ -1,0 +1,24 @@
+# Trident - SAR Maritime Vessel Detection
+# ========================================
+# Production dependencies for the complete pipeline
+
+# Deep Learning & Computer Vision
+ultralytics>=8.0.0          # YOLOv8-OBB model architecture
+opencv-python>=4.8.0        # Image processing and visualization
+numpy>=1.24.0               # Array operations
+
+# Signal Processing (for Lee Filter)
+scipy>=1.10.0               # ndimage filters for speckle reduction
+
+# Data Handling
+kaggle>=1.5.0               # Kaggle API for SSDD dataset download
+PyYAML>=6.0                 # Configuration file parsing
+
+# Optional: GPU Acceleration
+# torch>=2.0.0              # PyTorch (installed by ultralytics)
+# torchvision>=0.15.0       # Vision utilities
+
+# Optional: Development Tools
+# pytest>=7.0.0             # Testing
+# black>=23.0.0             # Code formatting
+# flake8>=6.0.0             # Linting
