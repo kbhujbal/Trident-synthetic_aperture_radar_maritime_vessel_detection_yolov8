@@ -1,0 +1,126 @@
+# Trident SAR Ship Detection Configuration
+# =========================================
+
+# Project Metadata
+project:
+  name: "Trident-synthetic_aperture_radar_maritime_vessel_detection"
+  version: "1.0.0"
+  description: "Production-grade maritime surveillance system for SAR imagery"
+
+# Data Configuration
+data:
+  # Kaggle dataset identifiers (in order of preference)
+  kaggle_datasets:
+    - "stanley1129/sar-ship-detection-dataset-ssdd"
+    - "pengxiaoyin/ssdd-dataset"
+
+  # Local paths
+  raw_dir: "./data/ssdd_raw"
+  processed_dir: "./data/ssdd_yolo_obb"
+
+  # Train/Val split
+  train_ratio: 0.8
+  random_seed: 42
+
+# Preprocessing Configuration
+preprocessing:
+  # Lee Filter Parameters
+  lee_filter:
+    enabled: true
+    window_size: 7              # Standard for SAR despeckling
+    noise_variance: null        # Auto-estimated if null
+
+  # Enhanced Lee (more aggressive)
+  enhanced_lee:
+    enabled: false
+    damping_factor: 1.0
+
+  # Contrast Enhancement
+  clahe:
+    enabled: true
+    clip_limit: 2.0
+    tile_grid_size: [8, 8]
+
+# Model Configuration
+model:
+  # YOLOv8-OBB variants: n (nano), s (small), m (medium), l (large), x (xlarge)
+  variant: "yolov8n-obb"        # Start with nano for fast iteration
+
+  # Input size (must be multiple of 32)
+  image_size: 640
+
+  # Class names
+  classes:
+    0: "ship"
+
+# Training Configuration
+training:
+  # Epochs and batching
+  epochs: 100
+  batch_size: 16
+  patience: 20                  # Early stopping patience
+
+  # Optimizer
+  optimizer: "AdamW"
+  learning_rate: 0.001
+  learning_rate_final: 0.01    # LR decay target (as fraction of lr0)
+  momentum: 0.937
+  weight_decay: 0.0005
+
+  # Warmup
+  warmup_epochs: 3
+  warmup_momentum: 0.8
+  warmup_bias_lr: 0.1
+
+  # Augmentation (optimized for SAR)
+  augmentation:
+    hsv_h: 0.015               # Minimal hue (SAR is grayscale-like)
+    hsv_s: 0.2
+    hsv_v: 0.2
+    degrees: 180.0             # Full rotation (ships face any direction)
+    translate: 0.1
+    scale: 0.5
+    shear: 0.0                 # No shear (preserve aspect ratio)
+    perspective: 0.0           # No perspective (top-down SAR view)
+    flipud: 0.5
+    fliplr: 0.5
+    mosaic: 1.0
+    mixup: 0.1
+    copy_paste: 0.1
+
+  # Experiment tracking
+  project: "trident_sar"
+  experiment: "ship_detection"
+
+  # Checkpointing
+  save_period: 10              # Save every N epochs
+  save_best: true
+
+# Inference Configuration
+inference:
+  confidence_threshold: 0.25
+  iou_threshold: 0.45
+  max_detections: 300
+
+  # Device selection (null = auto)
+  device: null
+
+  # Output
+  output_dir: "./output"
+  save_visualizations: true
+  save_labels: true
+
+# Visualization Configuration
+visualization:
+  # Bounding box colors (BGR format)
+  colors:
+    - [0, 255, 0]              # Green
+    - [255, 0, 0]              # Blue
+    - [0, 0, 255]              # Red
+    - [255, 255, 0]            # Cyan
+
+  # Drawing parameters
+  line_thickness: 2
+  font_scale: 0.5
+  show_confidence: true
+  show_class: true
