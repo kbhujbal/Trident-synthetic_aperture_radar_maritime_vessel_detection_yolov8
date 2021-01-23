@@ -58,9 +58,11 @@ class SSDDDataManager:
     """
 
     # Known Kaggle dataset identifiers for SSDD
+    # Updated to use available datasets on Kaggle
     KAGGLE_DATASETS = [
-        "stanley1129/sar-ship-detection-dataset-ssdd",
-        "pengxiaoyin/ssdd-dataset",
+        "kailaspsudheer/sarscope-unveiling-the-maritime-landscape",  # Best quality, 378MB
+        "petrarodriguez/ls-ssdd-v1-0",  # Large-Scale SSDD, 2.8GB
+        "mrearthworm/ssdd-sar-images",  # Compact SSDD, 49MB
     ]
 
     def __init__(
