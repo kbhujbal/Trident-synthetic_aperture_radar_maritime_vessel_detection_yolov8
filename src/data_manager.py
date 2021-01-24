@@ -4,9 +4,9 @@ SSDD Dataset Manager for SAR Ship Detection
 This module handles:
 1. Downloading the SSDD dataset from Kaggle via the kaggle API
 2. Extracting and crawling the directory structure (no assumptions about folder names)
-3. Converting annotations from VOC XML format to YOLO OBB format
+3. Converting annotations from COCO/VOC format to YOLO OBB format
 4. Auto-generating the data.yaml configuration for YOLOv8-OBB training
-5. Splitting data into train/val sets
+5. Splitting data into train/val sets (or using existing splits)
 
 WHY SSDD?
 ---------
@@ -25,15 +25,13 @@ around rotated ships, improving both IoU metrics and downstream tracking accurac
 
 import os
 import sys
+import json
 import shutil
-import zipfile
 import subprocess
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Tuple, List, Dict, Optional
 import random
 import yaml
-import cv2
 import numpy as np
 from dataclasses import dataclass
 
@@ -52,6 +50,11 @@ class AnnotationBox:
 class SSDDDataManager:
     """
     Manages the SSDD dataset lifecycle: download, extraction, conversion, and splitting.
+
+    Supports multiple annotation formats:
+    - COCO JSON (from Roboflow exports)
+    - Pascal VOC XML
+    - YOLO TXT
 
     The SSDD dataset structure varies between versions. This class crawls the extracted
     directory to find images and annotations regardless of folder naming conventions.
@@ -183,6 +186,7 @@ class SSDDDataManager:
         - Some use JPEGImages/, some use images/
         - Some use Annotations/, some use labels/
         - Some have nested structures
+        - Some use COCO JSON, some use VOC XML
 
         By crawling, we make the pipeline robust to these variations.
 
@@ -200,7 +204,7 @@ class SSDDDataManager:
         print(f"[INFO] Crawling dataset directory: {root_dir}")
 
         image_extensions = {'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.bmp'}
-        annotation_extensions = {'.xml', '.txt'}
+        annotation_extensions = {'.xml', '.txt', '.json'}
 
         images = []
         annotations = []
@@ -236,85 +240,103 @@ class SSDDDataManager:
 
         return images, annotations
 
-    def parse_voc_xml(self, xml_path: Path) -> List[Dict]:
+    def detect_dataset_format(self, root_dir: Optional[Path] = None) -> str:
         """
-        Parse a Pascal VOC format XML annotation file.
-
-        SSDD typically provides annotations in VOC XML format with:
-        - <filename>: Image filename
-        - <size>: Image dimensions
-        - <object>: Ship bounding boxes with <bndbox> or rotated <robndbox>
-
-        Args:
-            xml_path: Path to the XML annotation file
+        Detect the annotation format of the dataset.
 
         Returns:
-            List of bounding box dictionaries
+            'coco': COCO JSON format (_annotations.coco.json)
+            'voc': Pascal VOC XML format
+            'yolo': YOLO TXT format
+            'presplit_coco': Pre-split with train/valid/test and COCO JSON
         """
-        boxes = []
+        root_dir = root_dir or (self.data_root / "ssdd_raw")
 
-        try:
-            tree = ET.parse(xml_path)
-            root = tree.getroot()
+        # Check for pre-split COCO format (Roboflow style)
+        train_coco = root_dir / "train" / "_annotations.coco.json"
+        valid_coco = root_dir / "valid" / "_annotations.coco.json"
 
-            # Get image size for normalization
-            size_elem = root.find('size')
-            if size_elem is not None:
-                img_width = int(size_elem.find('width').text)
-                img_height = int(size_elem.find('height').text)
-            else:
-                # Default size if not specified
-                img_width, img_height = 500, 500
+        if train_coco.exists() and valid_coco.exists():
+            print("[INFO] Detected pre-split COCO format (Roboflow style)")
+            return 'presplit_coco'
 
-            # Parse each object (ship)
-            for obj in root.findall('object'):
-                box_data = {
-                    'class': obj.find('name').text if obj.find('name') is not None else 'ship',
-                    'img_width': img_width,
-                    'img_height': img_height
-                }
+        # Check for single COCO file
+        coco_files = list(root_dir.glob("**/*.json"))
+        if coco_files:
+            for f in coco_files:
+                if 'annotations' in f.name.lower() or 'coco' in f.name.lower():
+                    return 'coco'
 
-                # Check for rotated bounding box first (OBB format)
-                robndbox = obj.find('robndbox')
-                if robndbox is not None:
-                    # Rotated bounding box format
-                    cx = float(robndbox.find('cx').text)
-                    cy = float(robndbox.find('cy').text)
-                    w = float(robndbox.find('w').text)
-                    h = float(robndbox.find('h').text)
-                    angle = float(robndbox.find('angle').text)
+        # Check for VOC XML
+        xml_files = list(root_dir.glob("**/*.xml"))
+        if xml_files:
+            return 'voc'
 
-                    box_data.update({
-                        'cx': cx, 'cy': cy, 'w': w, 'h': h, 'angle': angle,
-                        'is_rotated': True
-                    })
-                else:
-                    # Standard bounding box - convert to OBB with 0 rotation
-                    bndbox = obj.find('bndbox')
-                    if bndbox is not None:
-                        xmin = float(bndbox.find('xmin').text)
-                        ymin = float(bndbox.find('ymin').text)
-                        xmax = float(bndbox.find('xmax').text)
-                        ymax = float(bndbox.find('ymax').text)
+        # Check for YOLO TXT
+        txt_files = list(root_dir.glob("**/*.txt"))
+        # Filter out README files
+        txt_files = [f for f in txt_files if 'readme' not in f.name.lower()]
+        if txt_files:
+            return 'yolo'
 
-                        # Convert to center format
-                        cx = (xmin + xmax) / 2
-                        cy = (ymin + ymax) / 2
-                        w = xmax - xmin
-                        h = ymax - ymin
+        return 'unknown'
 
-                        box_data.update({
-                            'cx': cx, 'cy': cy, 'w': w, 'h': h, 'angle': 0.0,
-                            'is_rotated': False
-                        })
+    def parse_coco_json(self, json_path: Path) -> Dict[str, List[Dict]]:
+        """
+        Parse a COCO format JSON annotation file.
 
-                if 'cx' in box_data:
-                    boxes.append(box_data)
+        Args:
+            json_path: Path to the COCO JSON file
 
-        except ET.ParseError as e:
-            print(f"[WARN] Failed to parse XML {xml_path}: {e}")
+        Returns:
+            Dictionary mapping image filenames to list of bounding boxes
+        """
+        with open(json_path, 'r') as f:
+            coco = json.load(f)
 
-        return boxes
+        # Build image ID to filename mapping
+        id_to_image = {}
+        for img in coco.get('images', []):
+            id_to_image[img['id']] = {
+                'file_name': img['file_name'],
+                'width': img['width'],
+                'height': img['height']
+            }
+
+        # Group annotations by image
+        image_annotations = {}
+        for ann in coco.get('annotations', []):
+            img_id = ann['image_id']
+            if img_id not in id_to_image:
+                continue
+
+            img_info = id_to_image[img_id]
+            filename = img_info['file_name']
+
+            if filename not in image_annotations:
+                image_annotations[filename] = []
+
+            # COCO bbox format: [x, y, width, height] (top-left corner)
+            bbox = ann['bbox']
+            x, y, w, h = bbox
+
+            # Convert to center format
+            cx = x + w / 2
+            cy = y + h / 2
+
+            box_data = {
+                'cx': cx,
+                'cy': cy,
+                'w': w,
+                'h': h,
+                'angle': 0.0,  # COCO doesn't have rotation, default to 0
+                'img_width': img_info['width'],
+                'img_height': img_info['height']
+            }
+
+            image_annotations[filename].append(box_data)
+
+        return image_annotations
 
     def convert_to_yolo_obb(self, box: Dict) -> str:
         """
@@ -384,20 +406,47 @@ class SSDDDataManager:
         Prepare the dataset in YOLO OBB format with train/val split.
 
         This method:
-        1. Creates the YOLO directory structure
-        2. Converts all annotations to OBB format
-        3. Copies images to train/val directories
-        4. Generates data.yaml configuration
+        1. Detects the annotation format
+        2. Creates the YOLO directory structure
+        3. Converts all annotations to OBB format
+        4. Copies images to train/val directories
+        5. Generates data.yaml configuration
 
         Returns:
             Path to the generated data.yaml file
         """
         print("[INFO] Preparing YOLO OBB dataset...")
 
-        # Ensure we have crawled the dataset
-        if not self.image_files:
-            self.crawl_dataset()
+        raw_dir = self.data_root / "ssdd_raw"
 
+        # Detect format
+        format_type = self.detect_dataset_format(raw_dir)
+        print(f"[INFO] Detected format: {format_type}")
+
+        if format_type == 'presplit_coco':
+            return self._prepare_from_presplit_coco(raw_dir)
+        elif format_type == 'coco':
+            return self._prepare_from_coco(raw_dir)
+        else:
+            raise ValueError(f"Unsupported format: {format_type}")
+
+    def _prepare_from_presplit_coco(self, raw_dir: Path) -> Path:
+        """
+        Prepare dataset from pre-split COCO format (Roboflow style).
+
+        Expected structure:
+        raw_dir/
+            train/
+                _annotations.coco.json
+                image1.jpg
+                ...
+            valid/
+                _annotations.coco.json
+                ...
+            test/ (optional)
+                _annotations.coco.json
+                ...
+        """
         # Create output directories
         for dir_path in [
             self.train_images_dir, self.val_images_dir,
@@ -405,37 +454,15 @@ class SSDDDataManager:
         ]:
             dir_path.mkdir(parents=True, exist_ok=True)
 
-        # Build image-annotation mapping
-        # Match by filename stem (without extension)
-        annotation_map = {}
-        for ann_path in self.annotation_files:
-            stem = ann_path.stem
-            annotation_map[stem] = ann_path
+        # Process train split
+        train_dir = raw_dir / "train"
+        train_coco = train_dir / "_annotations.coco.json"
+        self._process_coco_split(train_coco, train_dir, self.train_images_dir, self.train_labels_dir, "train")
 
-        # Collect valid image-annotation pairs
-        valid_pairs = []
-        for img_path in self.image_files:
-            stem = img_path.stem
-            if stem in annotation_map:
-                valid_pairs.append((img_path, annotation_map[stem]))
-            else:
-                print(f"[WARN] No annotation found for image: {img_path.name}")
-
-        print(f"[INFO] Found {len(valid_pairs)} valid image-annotation pairs")
-
-        # Shuffle and split
-        random.seed(self.seed)
-        random.shuffle(valid_pairs)
-
-        split_idx = int(len(valid_pairs) * self.train_ratio)
-        train_pairs = valid_pairs[:split_idx]
-        val_pairs = valid_pairs[split_idx:]
-
-        print(f"[INFO] Train: {len(train_pairs)}, Val: {len(val_pairs)}")
-
-        # Process each split
-        self._process_split(train_pairs, self.train_images_dir, self.train_labels_dir, "train")
-        self._process_split(val_pairs, self.val_images_dir, self.val_labels_dir, "val")
+        # Process validation split (Roboflow uses "valid")
+        val_dir = raw_dir / "valid"
+        val_coco = val_dir / "_annotations.coco.json"
+        self._process_coco_split(val_coco, val_dir, self.val_images_dir, self.val_labels_dir, "val")
 
         # Generate data.yaml
         data_yaml_path = self._generate_data_yaml()
@@ -445,34 +472,118 @@ class SSDDDataManager:
 
         return data_yaml_path
 
-    def _process_split(
+    def _process_coco_split(
         self,
-        pairs: List[Tuple[Path, Path]],
-        images_dir: Path,
-        labels_dir: Path,
+        coco_json: Path,
+        images_src_dir: Path,
+        images_dst_dir: Path,
+        labels_dst_dir: Path,
         split_name: str
     ):
-        """Process a train or val split."""
-        for img_path, ann_path in pairs:
-            # Copy image
-            dst_img = images_dir / img_path.name
-            shutil.copy2(img_path, dst_img)
+        """Process a single split from COCO format."""
+        print(f"[INFO] Processing {split_name} split...")
 
-            # Convert and save annotation
-            if ann_path.suffix.lower() == '.xml':
-                boxes = self.parse_voc_xml(ann_path)
-            else:
-                # Assume already in YOLO format for .txt files
-                # Just copy and handle later if needed
-                shutil.copy2(ann_path, labels_dir / ann_path.name)
+        # Parse COCO annotations
+        image_annotations = self.parse_coco_json(coco_json)
+
+        processed = 0
+        skipped = 0
+
+        for filename, boxes in image_annotations.items():
+            src_image = images_src_dir / filename
+
+            if not src_image.exists():
+                skipped += 1
                 continue
 
-            # Write YOLO OBB format
-            label_path = labels_dir / f"{img_path.stem}.txt"
+            # Copy image
+            dst_image = images_dst_dir / filename
+            shutil.copy2(src_image, dst_image)
+
+            # Write labels in YOLO OBB format
+            label_filename = Path(filename).stem + ".txt"
+            label_path = labels_dst_dir / label_filename
+
             with open(label_path, 'w') as f:
                 for box in boxes:
                     line = self.convert_to_yolo_obb(box)
                     f.write(line + '\n')
+
+            processed += 1
+
+        print(f"[INFO] {split_name}: Processed {processed} images, skipped {skipped}")
+
+    def _prepare_from_coco(self, raw_dir: Path) -> Path:
+        """Prepare dataset from a single COCO annotation file with random split."""
+        # Find COCO JSON file
+        coco_files = list(raw_dir.glob("**/*annotations*.json"))
+        if not coco_files:
+            coco_files = list(raw_dir.glob("**/*.json"))
+
+        if not coco_files:
+            raise FileNotFoundError("No COCO JSON file found")
+
+        coco_json = coco_files[0]
+        print(f"[INFO] Using COCO file: {coco_json}")
+
+        # Create output directories
+        for dir_path in [
+            self.train_images_dir, self.val_images_dir,
+            self.train_labels_dir, self.val_labels_dir
+        ]:
+            dir_path.mkdir(parents=True, exist_ok=True)
+
+        # Parse annotations
+        image_annotations = self.parse_coco_json(coco_json)
+
+        # Find images directory
+        images_dir = coco_json.parent
+        if (images_dir / "images").exists():
+            images_dir = images_dir / "images"
+
+        # Split filenames
+        filenames = list(image_annotations.keys())
+        random.seed(self.seed)
+        random.shuffle(filenames)
+
+        split_idx = int(len(filenames) * self.train_ratio)
+        train_files = filenames[:split_idx]
+        val_files = filenames[split_idx:]
+
+        print(f"[INFO] Train: {len(train_files)}, Val: {len(val_files)}")
+
+        # Process splits
+        self._process_file_list(train_files, image_annotations, images_dir,
+                                self.train_images_dir, self.train_labels_dir)
+        self._process_file_list(val_files, image_annotations, images_dir,
+                                self.val_images_dir, self.val_labels_dir)
+
+        return self._generate_data_yaml()
+
+    def _process_file_list(
+        self,
+        filenames: List[str],
+        annotations: Dict[str, List[Dict]],
+        src_dir: Path,
+        images_dst: Path,
+        labels_dst: Path
+    ):
+        """Process a list of files."""
+        for filename in filenames:
+            src_image = src_dir / filename
+            if not src_image.exists():
+                continue
+
+            # Copy image
+            shutil.copy2(src_image, images_dst / filename)
+
+            # Write labels
+            boxes = annotations.get(filename, [])
+            label_path = labels_dst / (Path(filename).stem + ".txt")
+
+            with open(label_path, 'w') as f:
+                for box in boxes:
+                    f.write(self.convert_to_yolo_obb(box) + '\n')
 
     def _generate_data_yaml(self) -> Path:
         """
@@ -574,7 +685,6 @@ def main():
         manager.download_dataset()
 
     if args.prepare:
-        manager.crawl_dataset()
         data_yaml = manager.prepare_yolo_dataset()
         print(f"\n[SUCCESS] Dataset ready for training!")
         print(f"[INFO] Use this config for training: {data_yaml}")
