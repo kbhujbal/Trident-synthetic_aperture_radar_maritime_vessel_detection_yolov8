@@ -2,18 +2,29 @@
 
 A production-grade maritime surveillance system for detecting ships in Synthetic Aperture Radar (SAR) imagery using Oriented Bounding Boxes (OBB) and speckle noise filtering.
 
+![Detection Results](assets/detection_grid.jpg)
+
 ## Mission
 
 Detect ships in SAR images where vessels appear as noisy "salt-and-pepper" clusters, using:
 - **Lee Speckle Filter**: Remove radar-specific multiplicative noise
 - **YOLOv8-OBB**: Detect ships with rotated bounding boxes (ships are rarely horizontal)
 
+## Pipeline
+
+![Pipeline](assets/pipeline.jpg)
+
 ## Why This Approach?
 
 ### The SAR Challenge
 SAR images suffer from "speckle noise" - a granular interference pattern unique to coherent radar imaging. Ships appear as bright clusters mixed with noise, making standard detection difficult.
 
-### Why Speckle Filtering?
+### Speckle Filtering (The "Secret Sauce")
+
+![Speckle Filter Comparison](assets/speckle_filter_comparison.jpg)
+
+The Lee filter removes multiplicative radar noise while preserving ship edges:
+
 ```
 Before Lee Filter:          After Lee Filter:
 ░░█░░█░░░░█░░█░░           ░░░░░░░░░░░░░░░░
@@ -25,6 +36,7 @@ Before Lee Filter:          After Lee Filter:
 
 ### Why Oriented Bounding Boxes?
 Ships sail in arbitrary directions. Axis-aligned boxes waste pixels and overlap:
+
 ```
 Standard Box (AABB):        Oriented Box (OBB):
 ┌─────────────────┐            ╱████████████╲
@@ -35,21 +47,29 @@ Standard Box (AABB):        Oriented Box (OBB):
   60% background!              Tight fit!
 ```
 
+## Sample Detection Results
+
+| Single Ship | Multiple Ships | Complex Scene |
+|:-----------:|:--------------:|:-------------:|
+| ![](assets/detection_1.jpg) | ![](assets/detection_2.jpg) | ![](assets/detection_3.jpg) |
+
 ## Project Structure
 
 ```
 Trident/
 ├── src/
 │   ├── __init__.py          # Package initialization
-│   ├── data_manager.py      # Kaggle download, VOC→YOLO conversion
+│   ├── data_manager.py      # Kaggle download, COCO→YOLO conversion
 │   ├── preprocessing.py     # Lee speckle filter implementation
 │   ├── train.py             # YOLOv8-OBB training pipeline
 │   └── inference.py         # Detection and visualization
 ├── config/
 │   └── config.yaml          # Configuration parameters
+├── scripts/
+│   └── generate_samples.py  # Generate sample outputs
+├── assets/                  # README images
 ├── data/                    # Dataset storage
 ├── output/                  # Detection results
-├── runs/                    # Training checkpoints
 └── requirements.txt
 ```
 
@@ -59,6 +79,7 @@ Trident/
 
 ```bash
 # Clone the repository
+git clone https://github.com/yourusername/Trident.git
 cd Trident
 
 # Create virtual environment
@@ -72,36 +93,30 @@ pip install -r requirements.txt
 ### 2. Kaggle Setup
 
 ```bash
-# Install kaggle CLI
-pip install kaggle
-
 # Configure API credentials
-# 1. Go to kaggle.com → Account → Create New API Token
-# 2. Save kaggle.json to ~/.kaggle/kaggle.json
+# 1. Go to kaggle.com → Settings → Create New API Token
+# 2. Create credentials file:
+mkdir -p ~/.kaggle
+echo '{"username":"YOUR_USERNAME","key":"YOUR_API_KEY"}' > ~/.kaggle/kaggle.json
 chmod 600 ~/.kaggle/kaggle.json
 ```
 
 ### 3. Download & Prepare Dataset
 
 ```bash
-cd src
-
-# Download SSDD from Kaggle
-python data_manager.py --download --data-root ../data
-
-# Prepare YOLO OBB format
-python data_manager.py --prepare --data-root ../data
+# Download SSDD from Kaggle and prepare YOLO OBB format
+python src/data_manager.py --download --prepare --data-root ./data
 ```
 
 ### 4. Train the Model
 
 ```bash
 # Train with default settings (YOLOv8n-OBB)
-python train.py --data ../data/ssdd_yolo_obb/data.yaml
+python src/train.py --data ./data/ssdd_yolo_obb/data.yaml
 
 # Train with custom settings
-python train.py \
-    --data ../data/ssdd_yolo_obb/data.yaml \
+python src/train.py \
+    --data ./data/ssdd_yolo_obb/data.yaml \
     --model yolov8s-obb \
     --epochs 150 \
     --batch 32 \
@@ -112,22 +127,16 @@ python train.py \
 
 ```bash
 # Demo mode (random validation images)
-python inference.py \
-    --model ../trident_sar/ship_detection/weights/best.pt \
-    --data ../data/ssdd_yolo_obb/data.yaml \
-    --output ../output
+python src/inference.py \
+    --model ./trident_sar/ship_detection/weights/best.pt \
+    --data ./data/ssdd_yolo_obb/data.yaml \
+    --output ./output
 
 # Single image
-python inference.py \
-    --model ../trident_sar/ship_detection/weights/best.pt \
+python src/inference.py \
+    --model ./trident_sar/ship_detection/weights/best.pt \
     --source /path/to/sar_image.jpg \
-    --output ../output
-
-# Directory of images
-python inference.py \
-    --model ../trident_sar/ship_detection/weights/best.pt \
-    --source /path/to/images/ \
-    --output ../output
+    --output ./output
 ```
 
 ## Configuration
@@ -193,10 +202,11 @@ Detection results include:
 
 ## Dataset: SSDD
 
-The SAR Ship Detection Dataset (SSDD) contains:
-- 1,160 SAR images from RadarSat-2, TerraSAR-X, Sentinel-1
-- 2,456 ship annotations
-- Mixed resolutions and polarizations
+The SAR Ship Detection Dataset (SSDD) used in this project:
+- **Source**: [Kaggle - SARscope Maritime Images](https://www.kaggle.com/datasets/kailaspsudheer/sarscope-unveiling-the-maritime-landscape)
+- **Train**: 4,716 images
+- **Validation**: 1,346 images
+- **Format**: COCO JSON (converted to YOLO OBB)
 
 ## Technical Details
 
@@ -222,10 +232,10 @@ Four normalized corner coordinates defining the rotated rectangle.
 
 ## License
 
-MIT License
+MIT License - see [LICENSE](LICENSE) for details.
 
 ## Acknowledgments
 
-- SSDD Dataset creators
-- Ultralytics YOLOv8 team
-- Jong-Sen Lee (Lee filter inventor)
+- [SSDD Dataset](https://www.kaggle.com/datasets/kailaspsudheer/sarscope-unveiling-the-maritime-landscape) creators
+- [Ultralytics](https://github.com/ultralytics/ultralytics) YOLOv8 team
+- Jong-Sen Lee (Lee filter inventor, 1981)
