@@ -11,20 +11,6 @@ work well when objects are roughly horizontal/vertical. But ships in SAR imagery
 2. Appear at various angles due to satellite viewing geometry
 3. Are often elongated (length >> width)
 
-PROBLEMS WITH HORIZONTAL BOXES:
--------------------------------
-┌─────────────────────────┐
-│  ████████               │    <- Lots of wasted background pixels
-│       █████████         │    <- May overlap with adjacent ships
-│           ████████      │    <- Poor IoU even with correct detection
-└─────────────────────────┘
-
-ADVANTAGES OF ORIENTED BOXES:
------------------------------
-    ╱████████████████╲
-   ╱████████████████╲        <- Tight fit around ship hull
-    ╲████████████████╱       <- Better IoU metrics
-     ╲████████████████╱      <- No overlap with parallel vessels
 
 YOLOv8-OBB predicts: (x_center, y_center, width, height, rotation_angle)
 This 5-DOF representation perfectly captures ship orientation.
